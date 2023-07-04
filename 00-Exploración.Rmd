@@ -1,27 +1,3 @@
----
-title: "Spotify-Genius"
-author:
-- name: Luis María Plaza Chicote
-- affiliation: Universidad Complutense de Madrid
-output:
-  html_document:
-    toc: yes
-    toc_depth: '3'
-    df_print: paged
-  distill::distill_article:
-    highlight: kate
-    colorlinks: yes
-    code_folding: no
-    toc: yes
-    toc_depth: 3
-  word_document:
-    toc: yes
-    toc_depth: '3'
-  pdf_document:
-    toc: yes
-    toc_depth: '3'
----
-
 # Ajustes
 
 ## Ajustes comunes de los chunk

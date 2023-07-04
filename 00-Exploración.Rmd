@@ -1,0 +1,1234 @@
+---
+title: "Spotify-Genius"
+author:
+- name: Luis María Plaza Chicote
+- affiliation: Universidad Complutense de Madrid
+output:
+  html_document:
+    toc: yes
+    toc_depth: '3'
+    df_print: paged
+  distill::distill_article:
+    highlight: kate
+    colorlinks: yes
+    code_folding: no
+    toc: yes
+    toc_depth: 3
+  word_document:
+    toc: yes
+    toc_depth: '3'
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+# Ajustes
+
+## Ajustes comunes de los chunk
+
+```{r setup, include=FALSE}
+# Ajuste comunes de los chunk
+knitr::opts_chunk$set(fig.width = 9, fig.asp = 1, out.width = "100%",
+                      message = FALSE, warning = FALSE,
+                      echo = FALSE, res = 400)
+```
+
+## Paquetes
+
+```{r}
+# Importamos los paquetes necesarios
+rm(list = ls())
+
+# Paquetes de manipulación y visualización de datos
+library(tidyverse)
+library(ggplot2)
+library(ggthemes)
+library(lubridate)
+library(scales)
+library(tidyr)
+library(dplyr)
+library(stringr)
+library(sysfonts)
+library(showtext)
+
+# Paquetes de limpieza y preprocesamiento de datos
+library(outliers)
+library(skimr)
+
+# Paquetes de modelado de datos
+library(tidymodels)
+library(caret)
+library(rsample)
+library(yardstick)
+
+# Paquetes de estadísticas y correlación
+library(corrr)
+library(corrplot)
+
+# Paquetes de lectura y escritura de datos
+library(readr)
+library(haven)
+
+# Paquetes de otros propósitos
+library(knitr)
+library(zoo)
+library(purrr)
+library(rpart.plot)
+```
+
+## Tema para los gráficos
+
+```{r}
+# Letra calibri
+font_add(family = "Calibri", regular = "Calibri.ttf")
+showtext_auto()
+
+tema_graficos <-
+  theme_classic() +
+  theme(text = element_text(family = "Calibri", size = 0.66),
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.caption.position = "plot")
+
+paleta_spotify <- c("#1ed760", "#212121", "#121212", "#535353", "#b3b3b3", "#ffff64")
+```
+
+
+# Spotify and Genius Track Dataset
+
+La base de datos principal para este trabajo será construida a partir de cuatro dataset, aportándonos cuatro conjuntos de datos, los cuales son:
+
+- **spotify_tracks**: pistas de reproducción de Spotify seleccionadas junto con sus características (101.939 observaciones). Este será el dataset principal.
+
+- **spotify_artists**: artistas a los que pertenece las distintas pistas junto con sus características (56.129 observaciones).
+
+- **spotify_albums**: álbumes a los que pertenecen las distintas pistas junto con sus características (75.511 observaciones).
+
+- **lyrics_features**: letras de las pistas junto con sus características (94.954 observaciones). Este dataset es extraído desde la página web de música Genius.
+
+Esta base de datos sido extraída del siguiente enlace de la plataforma Kaggle: <https://www.kaggle.com/datasets/saurabhshahane/spotgen-music-dataset>. Este conjunto de datos no solo cuenta con canciones de música, también puede ser radio hablada, podcasts o programas de noticias.
+
+```{r}
+# Importamos los ficheros de datos
+spotify_albums_bruto <- read.csv("bbdd_bruto/spotify_albums.csv")
+spotify_artists_bruto <- read.csv("bbdd_bruto/spotify_artists.csv")
+spotify_tracks_bruto <- read.csv("bbdd_bruto/spotify_tracks.csv")
+lyrics_features_bruto <- read.csv("bbdd_bruto/lyrics_features.csv")
+```
+
+
+# Análisis exploratorio inicial
+
+Para empezar, vamos a echar un vistazo inicial a las variables de cada dataset con la función `glimpse`, ya que hay variables repetidas en varios dataset y otras variables que tendremos que eliminar porque son irrelevantes ya a simple vista, como pueden ser los enlaces url externos o enlaces a imágenes de portadas.
+
+```{r}
+glimpse(spotify_albums_bruto)
+glimpse(spotify_artists_bruto)
+glimpse(spotify_tracks_bruto)
+glimpse(lyrics_features_bruto)
+```
+
+
+## Descarte de variables y unión de los cuatro dataset
+
+Antes de realizar el análisis descriptivo de las variables y empezar con la exploración, vamos a descartar variables que vemos irrelevantes ya a simple vista, como pueden ser los enlaces url que enlazan con Spotify, columnas que vienen repetidas en varios dataset. 
+
+También, renombraremos los nombres de las columnas para que sepamos su dataset de origen con el prefijo correspondiente: `track_`, `album_`, `artist_` y `lyric_`.
+
+Por último, uniremos los cuatro dataset en uno llamándolo `spotify_fusion`.
+
+```{r}
+# Renombre y descarte de variables en SPOTIFY_ALBUMS
+spotify_albums <- spotify_albums_bruto |> 
+  rename(album_id = id, album_name = name, album_release_date = release_date,
+         album_tracks = total_tracks) |> 
+  select(-X, -artist_id, -external_urls, -href, -uri, -type, -images, 
+         -track_name_prev, -available_markets, -release_date_precision)
+
+# Renombre y descarte de variables en SPOTIFY_ARTISTS
+spotify_artists <- spotify_artists_bruto |> 
+  rename(artist_id = id, artist_name = name, artist_followers = followers,
+         artist_genres = genres) |> 
+  select(-X, -type, -track_name_prev)
+
+# Renombre y descarte de variables en SPOTIFY_TRACKS
+spotify_tracks <- spotify_tracks_bruto |> 
+  select(-X, -analysis_url, -href, -preview_url, -track_href, -uri, 
+         -type, -track_name_prev) |> 
+  rename_all(~ paste0("track_", .)) |> 
+  rename(track_number = track_track_number, artist_id = track_artists_id, 
+         album_id = track_album_id)
+
+# Dentro de spotify_tracks, la variable artist_id viene detallada en listas ya que una pista de reproducción suele ser parte de más de un artista. Esto hará que no pueda localizar la pista con su artista correspondiente al unir los dos dataset, por lo que nos quedaremos con el primero que nos aparezca de cada lista, que normalmente es el artista principal
+spotify_tracks$artist_id <- sub("\\['([^']*)'.*", "\\1", spotify_tracks$artist_id)
+
+# Renombre y descarte de variables en LYRICS_FEATURES
+lyrics_features <- lyrics_features_bruto |> 
+  select(-X) |> 
+  rename_all(~ paste0("lyric_", .)) |> 
+  rename(track_id = lyric_track_id)
+
+# Unión de todos los dataset a través de la función merge
+spotify1 <- merge(spotify_tracks, spotify_artists, by = c("artist_id"), all.x = TRUE)
+spotify2 <- merge(spotify1, spotify_albums, by = c("album_id"), all.x = TRUE)
+spotify3 <- merge(spotify2, lyrics_features, by = c("track_id"), all.x = TRUE)
+spotify_fusion <- spotify3
+
+# La columna track_id aparece duplicada en cada uno de los dataset, por lo que nos quedamos tan solo con una de ellas
+spotify_fusion <- spotify_fusion |> 
+  select(-track_id, -track_id.y) |> 
+  rename(track_id = track_id.x)
+```
+
+
+## Análisis descriptivo de las variables
+
+Una vez unificados los cuatro dataset en una única base de datos, echamos un vistazo genérico por sus variables con las funciones `summary` y `glimpse`.
+
+```{r, include=FALSE}
+summary(spotify_fusion)
+```
+
+```{r, include=FALSE}
+glimpse(spotify_fusion)
+```
+
+Como podemos observar, nuestro conjunto de datos recoge 101.939 observaciones con 38 atributos (variables) de cada una de ellas. Las variables están agrupadas en cuatro categorías principales en base a la procedencia de sus dataset de origen. A continuación describimos cada variable:
+
+### spotify_tracks
+
+- `track_id`: ID de la pista proporcionado por Spotify.
+- `track_acousticness`: medida de confianza sobre si la pista es acústica.
+- `track_available_markets`: países en los que se ha escuchado la pista.
+- `track_country`: país de origen de la pista.
+- `track_danceability`: combinación de elementos musicales para determinar la bailabilidad de una pista.
+- `track_disc_number`: número del disco del artista en la que aparece la pista en cuestión.
+- `track_duration_ms`: duración de la pista en milisegundos.
+- `track_energy`: medida perceptiva de intensidad y actividad.
+- `track_instrumentalness`: p#FF0000ice si una pista no contiene voces y es totalmente instrumental.
+- `track_key`: tonalidad global estimada de la pista.
+- `track_liveness`: vitalidad de la pista.
+- `track_loudness`: sonoridad general de una pista en decibelios (dB).
+- `track_lyrics`: letra de la pista.
+- `track_mode`: modalidad (mayor o menor) de una pista, el tipo de escala del que se deriva su contenido melódico.
+- `track_name`: nombre de la pista.
+- `track_playlist`: lista de reproducción de la que ha sido extraída la pista.
+- `track_popularity`: popularidad de la pista.
+- `track_speechiness`: nivel de locualidad que tiene la pista.
+- `track_tempo`: tempo global estimado de una pista en pulsaciones por minuto (BPM).
+- `track_time_signature`: compás musical de la pista.
+- `track_number`: número de la pista en su álbum correspondiente.
+- `track_valence`: medida que describe la positividad musical que transmite una pista.
+
+### spotify_artists
+
+- `artist_popularity`: popularidad del artista.
+- `artist_followers`: número se seguidores del artista.
+- `artist_genres`: géneros de música en los que se cataloga al artista.
+- `artist_id`: ID del artista proporcionado por Spotify.
+- `artist_name`: nombre del artista.
+
+### spotify_albums
+
+- `album_type`: tipo del álbum.
+- `album_id`: ID del álbum proporcionado por Spotify.
+- `album_name`: nombre del álbum.
+- `album_release_date`: fecha de lanzamiento del álbum.
+- `album_tracks`: número de pistas del álbum.
+
+### lyrics_features
+
+- `lyric_mean_syllables_word`: media de sílabas por palabra en la pista.
+- `lyric_mean_words_sentence`: media de palabras por frase en la pista.
+- `lyric_n_sentences`: número de frases en la pista.
+- `lyric_n_words`: número de palabras en la pista.
+- `lyric_sentence_similarity`: similitud entre frases de la pista.
+- `lyric_vocabulary_wealth`: nivel de riqueza del vocabulario.
+
+
+## Limpieza previa
+
+Tras observar el fichero, consideramos que es importante realizar una "limpieza" de los datos disponibles, como la transformación de alguna variable tipo fecha o la transformación a variables de tipo numérico o factor. 
+
+Por otra parte, hemos podido observar que en el dataset proveniente de `lyrics_features`, tenemos 6964 registros que no cuentan con la información correspondiente en la plataforma Genius y vienen marcados como NA. También, existe en la variable de fecha **album_release_date** 8.367 observaciones que no cuentan con la fecha de lanzamiento. Para tener una base de datos con información completa, decidimos eliminar estos registros, ya que son variables donde no es posible imputarles otro valor.
+
+```{r}
+spotify_fusion <- spotify_fusion |>
+  mutate(across(where(is.integer), as.numeric)) |> 
+  mutate(album_release_date = as.Date(album_release_date)) |> 
+  filter(!is.na(lyric_n_words)) |> 
+  filter(!is.na(album_release_date))
+
+spotify_explor <- spotify_fusion
+```
+
+
+Para finalizar este análisis exploratorio inicial, hacemos uso de la función `skim` para ver las características de las variables en función de su categoría, donde podremos localizar ya en un primer momento, si hay datos ausentes o atípicos, a la vez que observar la distribución de cada variable: 
+
+```{r}
+spotify_fusion |> skim()
+```
+
+
+Una vez conformada nuestra base de datos y habiendo realizado una rápida exploración inicial, pasamos a realizar una exploración más profunda, analizando cada variable una a una, y realizando una serie de modificaciones que podrían ser interesantes a la hora de trabajar con algoritmos más adelante.
+
+
+# Exploración individual de las variables
+
+## Variable objetivo 
+
+- **track_popularity**
+
+La popularidad de una pista es un valor entre 0 y 100, siendo 100 la más popular. La popularidad se calcula por algoritmo y se basa, en su mayor parte, en el número total de reproducciones que ha tenido la pista y lo recientes que son esas reproducciones.
+
+La media de popularidad de las pistas se encuentra en torno a 40. El 25% de las pistas tienen una popularidad menor o igual a 29, mientras que el 75% de las canciones tienen una popularidad menor o igual a 52.
+
+```{r}
+summary(spotify_fusion$track_popularity)
+
+ggplot(spotify_fusion, aes(track_popularity)) +
+    geom_density(color = "#17A54A", fill = "#71EB9D") +
+    geom_vline(aes(xintercept = mean(track_popularity)), 
+               color = '#FF0000', linetype = 'dashed', size = 0.6)
+
+spotify_fusion <- spotify_fusion |> select(c(track_popularity, everything()))
+```
+
+
+## Variables cualitativas
+
+- **album_id**
+
+Número identificativo del álbum, equivale a **album_name**. No usaremos esta variable.
+
+- **artist_id**
+
+Número identificativo del artista, equivale a **artist_name**. No usaremos esta variable.
+
+- **track_available_markets**
+
+Esta variable es de tipo lista, donde en cada observación aparecen los países en los que se escucha la pista analizada. Si hacemos un `count`, aparecen las listas más repetidas que suelen ser los mismos países siempre.
+
+A priori no parece una variable que nos aporte gran información tal cual viene representada ya que aparecen más de 3000 listas distintas de países. Por ello, creamos una nueva columna llamada **track_num_countries**, que nos dirá el número de países donde se escucha la pista, sumando de cada lista el número de países que contiene.
+
+Con esta nueva columna, vemos que el 66% de las pistas se escuchan en 79 países, y que más del 85% de las pistas se escuchan en más de 70 países. 
+
+Si analizamos que media de popularidad existe en las pistas que son escuchadas en el mismo número de países, no hay mucha diferencia entre pistas que son escuchadas en pocos países y pistas que son escuchadas en los 79 países.
+
+```{r}
+spotify_fusion |> 
+  count(track_available_markets, sort = TRUE) |> 
+  mutate(porc = 100*n/sum(n))
+
+spotify_fusion$track_num_countries <- sapply(spotify_fusion$track_available_markets, 
+                                             function(x){
+                                               length((unique(unlist(strsplit(x, ",")))))
+                                             })
+
+spotify_fusion |> 
+  count(track_num_countries, sort = TRUE) |> 
+  mutate(porc = 100*n/sum(n))
+
+num_country_popularity <- spotify_fusion %>%
+  group_by(track_num_countries) %>%
+  summarize(mean_popularity = mean(track_popularity)) |>  
+  arrange(desc(mean_popularity)) |>  print()
+```
+
+Si hacemos un diagrama de dispersión para ver la relación entre **track_num_countries** y **track_popularity** veremos una gran dispersión que no servirá de nada. Lo vemos mejor en intervalos de 10 y calculando la media de popularidad para cada intervalo.
+
+```{r}
+ggplot(spotify_fusion,
+       aes(x = track_num_countries, y = track_popularity)) + geom_point()
+
+# Definir los intervalos para la variable "track_num_countries"
+intervals_track_num_countries <- seq(0, max(spotify_fusion$track_num_countries), by = 10)
+
+# Calcular la media de "track_popularity" para cada intervalo
+means_track_num_countries <- tapply(spotify_fusion$track_popularity,
+                cut(spotify_fusion$track_num_countries, 
+                    breaks = intervals_track_num_countries),
+                mean)
+
+# Crear un gráfico de barras para visualizar las medias por intervalo
+barplot(means_track_num_countries, 
+        xlab = "Número de países", 
+        ylab = "Popularidad promedio del track",
+        main = "Relación entre el número de países y la popularidad del track",
+        col = "#71EB9D")
+```
+
+Podemos seguir sacándole partido a esta variable. Podemos crear cinco variables nuevas que haga referencia a los cinco continentes, y si una pista es escuchada en un país de dicho continente, en la nueva columna saldrá como 1, y sino, como 0. Creamos así 5 variables binarias: **market_Africa**, **market_America**, **market_Asia**, **market_Europa** y **market_Oceania**.
+
+Para hacerlo de una manera ágil, extraemos de Internet una tabla en Excel que nos aporta todos los códigos de los países con su continente correspondiente, según el código ISO 3166-1 alpha-2: <https://github.com/lukes/ISO-3166-Countries-with-Regional-Codes/blob/master/all/all.csv>
+
+```{r}
+# Importamos el Excel con todos los países y nos quedamos solo con el código ISO y su continente correspondiente
+library(readxl)
+iso_3166_1 <- read_excel("ISO-3166-Countries-with-Regional-Codes.xlsx") |>  select("alpha-2", "region") |> rename("code" = "alpha-2", "continent" = "region")
+
+# Obtenemos los nombres de los continentes
+continentes <- unique(iso_3166_1$continent)
+
+# Creamos una lista vacía para almacenar los códigos de países por continente
+continente <- list()
+
+# Bucle para recorrer los continentes y asignar los códigos de países correspondientes
+for (i in 1:length(continentes)) {
+  continente[[continentes[i]]] <- unique(iso_3166_1$code[iso_3166_1$continent == continentes[i]])
+}
+
+# Ahora sacamos vectores de los códigos de cada continente, para posteriormente crear las columnas por continente
+codigos_africa <- continente$Africa
+codigos_america <- continente$Americas
+codigos_asia <- continente$Asia
+codigos_europa <- continente$Europe
+codigos_oceania <- continente$Oceania
+
+
+# Columna del mercado de África
+spotify_fusion$market_Africa <- ifelse(
+  grepl("DZ|AO|NA|BJ|BW|IO|BF|BI|CV|CM|CF|TD|KM|CG|CD|CI|DJ|EG|GQ|ER|SZ|ET|TF|GA|GM|GH|GN|GW|KE|LS|LR|LY|MG|MW|ML|MR|MU|YT|MA|MZ|NA|NE|NG|RE|RW|SH|ST|SN|SC|SL|SO|ZA|SS|SD|TZ|TG|TN|UG|EH|ZM|ZW", spotify_fusion$track_available_markets), 1, 0)
+
+# Columna del mercado de América
+spotify_fusion$market_America <- ifelse(
+  grepl("AI|AG|AR|AW|BS|BB|BZ|BM|BO|BQ|BV|BR|CA|KY|CL|CO|CR|CU|CW|DM|DO|EC|SV|FK|GF|GL|GD|GP|GT|GY|HT|HN|JM|MQ|MX|MS|NI|PA|PY|PE|PR|BL|KN|LC|MF|PM|VC|SX|GS|SR|TT|TC|US|UY|VE|VG|VI", spotify_fusion$track_available_markets), 1, 0)
+
+# Columna del mercado de Asia
+spotify_fusion$market_Asia <- ifelse(
+  grepl("AF|AM|AZ|BH|BD|BT|BN|KH|CN|CY|GE|HK|IN|ID|IR|IQ|IL|JP|JO|KZ|KP|KR|KW|KG|LA|LB|MO|MY|MV|MN|MM|NP|OM|PK|PS|PH|QA|SA|SG|LK|SY|TW|TJ|TH|TL|TR|TM|AE|UZ|VN|YE", spotify_fusion$track_available_markets), 1, 0)
+
+# Columna del mercado de Europa
+spotify_fusion$market_Europa <- ifelse(
+  grepl("AX|AL|AD|AT|BY|BE|BA|BG|HR|CZ|DK|EE|FO|FI|FR|DE|GI|GR|GG|VA|HU|IS|IE|IM|IT|JE|LV|LI|LT|LU|MT|MD|MC|ME|NL|MK|NO|PL|PT|RO|RU|SM|RS|SK|SI|ES|SJ|SE|CH|UA|GB", spotify_fusion$track_available_markets), 1, 0)
+
+# Columna del mercado de Oceania
+spotify_fusion$market_Oceania <- ifelse(
+  grepl("AS|AU|CX|CC|CK|FJ|PF|GU|HM|KI|MH|FM|NR|NC|NZ|NU|NF|MP|PW|PG|PN|WS|SB|TK|TO|TV|UM|VU|WF", spotify_fusion$track_available_markets), 1, 0)
+```
+
+Una vez creadas las 5 variables binarias por continentes, vamos a hacer una exploración que nos diga el porcentaje de canciones que se escuchan en cada continente.
+
+Como era de esperar haciendo el primer análisis de esta variable, al menos el 90% de los registros con los que cuenta la base de datos se escuchan en cada continente. El continente con más pistas escuchadas es Europa con casi un 96% de ellas. En cuanto a popularidad, la media de esta en cada continente es idéntica, 40.
+
+```{r}
+market_cols <- spotify_fusion[, grep("^market_", colnames(spotify_fusion))]
+proporcion_market <- colMeans(market_cols)
+proporcion_market <- sort(proporcion_market, decreasing = TRUE)
+market_prop <- data.frame(
+  market = names(proporcion_market),
+  proporcion_market = proporcion_market)
+print(market_prop)
+
+spotify_fusion  |> 
+  pivot_longer(starts_with("market_"), names_to = "market", values_to = "market_value") |>
+  filter(market_value == 1) |> 
+  group_by(market) |> 
+  summarize(mean_popularity = mean(track_popularity)) |> 
+  arrange(desc(mean_popularity))
+```
+
+- **track_country**
+
+En teoría esta variable tendría que ser el país de origen de la pista, pero observando las variables que arroja esta variable, solo nos da tres países que no corresponden con el origen de la pista correspondiente. Los países son Argentina (AR), Finlandia (FI) y Bélgica (BE). Quizás sea el país de donde fueron descargadas las pistas. Dejaremos la variable por si nos sirve para futuros estudios. Destacar que el país con una mayor proporción de tracks es Argentina (49%), y también es donde sus tracks tienen una media de popularidad mayor (43).
+
+```{r}
+spotify_fusion |> 
+  count(track_country, sort = TRUE) |> 
+  mutate(porc = 100*n/sum(n)) |> print()
+
+# Agrupa los datos por país y calcula la media de popularidad para cada grupo
+country_popularity <- spotify_fusion %>%
+  group_by(track_country) %>%
+  summarize(mean_popularity = mean(track_popularity)) |> 
+  arrange(desc(mean_popularity)) |>  print()
+```
+
+- **track_id**
+
+Número identificativo de la pista, equivale a **track_name**. No usaremos esta variable.
+
+Comprobamos aun así que no hay duplicados en esta variable que nos indicaría que hay pistas repetidas y por tanto, habría que eliminarlas.
+
+```{r}
+duplicates_track_id <- duplicated(spotify_fusion$track_id)
+num_duplicates_track_id <- sum(duplicates_track_id)
+num_duplicates_track_id
+```
+
+- **track_lyrics**
+
+Esta variable que aporta la letra de la canción ya la tenemos transformada en las variables en el conjunto de variables de lyrics_features extraída de Genius, ofreciéndonos el número de palabras y frases en la letra. Por tanto, no es necesario usar esta variable.
+
+- **track_name**
+
+Esta variable nos muestra el nombre de la pista. Lógicamente, cada pista tiene un nombre, pero tenemos que tener en cuenta que hay canciones que se llaman igual, con nombres típicos como `Home`, `You`, `Time`, `Breathe`... 
+
+Por otro lado, también nos encontramos con las mismas canciones y mismo nombre que ocurre cuando una misma canción fue sacada por ejemplo como single, en álbum, con una colaboración posteriormente... En este caso si que hay que dejarlos porque tienen distintos niveles de popularidad a pesar de ser la misma canción.
+
+```{r}
+spotify_fusion |> 
+  count(track_name, sort = TRUE) |> 
+  mutate(porc = 100*n/sum(n))
+```
+
+- **track_playlist**
+
+Listas de reproducción de las que provienen las pistas extraídas. Contamos con 3.754 playlists distintas donde ninguna alcanza un 1% de representatividad. Para poder trabajar con esta variable, deberemos recategorizarla
+
+```{r}
+spotify_fusion |> 
+  count(track_playlist, sort = TRUE) |> 
+  mutate(porc = 100*n/sum(n))
+```
+
+```{r}
+# Agrupamos los datos por playlist y calculamos la media de popularidad para cada grupo
+playlist_popularity <- spotify_fusion |> 
+  group_by(track_playlist) |> 
+  summarize(mean_popularity = mean(track_popularity)) |> 
+  arrange(desc(mean_popularity)) 
+
+# Agrupamos las playlists por la media de popularidad que tiene cada una, de 10 en 10
+playlist_popularity <- playlist_popularity |> 
+  mutate(playlist_mean = cut(mean_popularity, 
+                              breaks = seq(-1, 100, 10), 
+                              labels = paste0("playlist_", seq(0, 90, 10))))
+
+# Juntamos las playlists de media 70, 80 y 90 al tener poca representatividad
+playlist_popularity <- playlist_popularity |> mutate(playlist_mean = fct_collapse(playlist_mean, playlist_70 = c("playlist_70", "playlist_80", "playlist_90")))
+
+# Agregamos la nueva categorización playlist_mean a spotify_fusion
+spotify_fusion <- left_join(spotify_fusion, playlist_popularity, by = "track_playlist")
+
+# Renombramos la columna track_playlist por playlist_mean
+spotify_fusion <- spotify_fusion |> select(-c(mean_popularity))         
+```
+
+Crearemos una nueva variable llamada **playlist_mean** donde agrupamos las playlists en función de la media de popularidad que tienen todas sus pistas. De esta forma, pasamos de tener 3.754 categorías a tener solo 8. Cada categoría recoge un intervalo de 10, por ejemplo, `playlist_20` recoge las playlists que tienen una media de popularidad de 20 a 30. Añadir que playlists con más de 70 de media de popularidad es poco frecuente, por lo que las hemos agrupado en `playlist_70`. 
+
+Si hacemos un `count` de la variable, vemos que las listas de reproducción más repetidas son `playlist_40`, `playlist_30` y `playlist_50`, con un 73.6% de los datos.
+
+```{r}
+spotify_fusion |> 
+  count(playlist_mean, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+```
+
+- **artist_genres**
+
+Esta columna muestra los géneros en los que está catalogado el artista de la pista. Con esta variable nos ocurre lo mismo que con **track_available_markets**, son listas con las que es complicado trabajar y analizar, ya que aquí tenemos más de 12000 listas distintas, y una lista puede contener hasta 6 géneros distintos asociados al artista.
+
+Para poder sacarle provecho a esta variable, haremos lo mismo que hicimos en **track_available_markets**. En este caso, crearemos variables binarias con los géneros de música más escuchados en todos los tiempos y si una pista tiene ese género en su lista, se le pondrá un 1 a su variable correspondiente.
+
+Por ejemplo, si tenemos una pista que en la columna **artist_genres** presenta la siguiente lista: `['classic swedish indie', 'swedish jazz', 'swedish pop']`, las nuevas variables binarias la catalogarán como una pista de indie, jazz y pop, siendo dichas variables marcadas con 1 y el resto con 0.
+
+```{r}
+spotify_fusion |> 
+  count(artist_genres, sort = TRUE) |> 
+  mutate(porc = 100*n/sum(n))
+
+# Creamos las nuevas variables con los géneros musicales más escuchados
+spotify_fusion$genre_rap <- ifelse(grepl("rap", spotify_fusion$artist_genres), 1, 0)
+spotify_fusion$genre_pop <- ifelse(grepl("pop", spotify_fusion$artist_genres), 1, 0)
+spotify_fusion$genre_rock <- ifelse(grepl("rock", spotify_fusion$artist_genres), 1, 0)
+spotify_fusion$genre_house <- ifelse(grepl("house", spotify_fusion$artist_genres), 1, 0)
+spotify_fusion$genre_indie <- ifelse(grepl("indie", spotify_fusion$artist_genres), 1, 0)
+spotify_fusion$genre_dance <- ifelse(grepl("dance", spotify_fusion$artist_genres), 1, 0)
+spotify_fusion$genre_folk <- ifelse(grepl("folk", spotify_fusion$artist_genres), 1, 0)
+spotify_fusion$genre_classical <- ifelse(grepl("classical", spotify_fusion$artist_genres), 1, 0)
+spotify_fusion$genre_hiphop <- ifelse(grepl("hip hop", spotify_fusion$artist_genres), 1, 0)
+spotify_fusion$genre_electro <- ifelse(grepl("electro", spotify_fusion$artist_genres), 1, 0)
+```
+
+Tras crear las distintas variables con los géneros más populares, analizamos ahora la proporción de ellos en nuestra base de datos.
+
+Un 31% de las pistas son catalogadas como pop, un 16% como rock y un 13% como indie. Por otro lado, el género con más popularidad es el rap con un 53 de media, siguiéndole géneros comos hip hop, dance o electro.
+
+```{r}
+genre_cols <- spotify_fusion[, grep("^genre_", colnames(spotify_fusion))]
+proporcion_genre <- colMeans(genre_cols)
+proporcion_genre <- sort(proporcion_genre, decreasing = TRUE)
+genre_prop <- data.frame(
+  genre = names(proporcion_genre),
+  proporcion_genre = proporcion_genre)
+print(genre_prop)
+
+spotify_fusion  |> 
+  pivot_longer(starts_with("genre_"), names_to = "genre", values_to = "genre_value") |>
+  filter(genre_value == 1) |> 
+  group_by(genre) |> 
+  summarize(mean_popularity = mean(track_popularity)) |> 
+  arrange(desc(mean_popularity))
+```
+
+- **artist_name**
+
+Artistas de las respectivas pistas de reproducción. Son más de 40000 artistas distintos y no hay ninguno con una representatividad mayor que el resto.
+
+```{r}
+spotify_fusion |> 
+  count(artist_name, sort = TRUE) |> 
+  mutate(porc = 100*n/sum(n))
+```
+
+- **album_type**
+
+Tipo de álbum de la pista de reproducción que puede ser de tres tipos: `album`, `single` o `compilation`. El más usual es álbum con un 52%. Según la media de la popularidad, tiende a tener mayor popularidad una pista cuando es sacada como single, en lugar de albúm o compilación.
+
+```{r}
+spotify_fusion |> 
+  count(album_type, sort = TRUE) |> 
+  mutate(porc = 100*n/sum(n))
+
+# Agrupamos los datos por genero y calculamos la media de popularidad para cada grupo
+album_type_popularity <- spotify_fusion |> 
+  group_by(album_type) |> 
+  summarize(mean_popularity = mean(track_popularity)) |> 
+  arrange(desc(mean_popularity)) |>  print()
+```
+
+- **album_name**
+
+Álbum del que procede la pista de reproducción. Son más de 66000 registros y al igual que en **artist_name**, ninguno tiene una proporción destacada.
+
+```{r}
+spotify_fusion |> 
+  count(album_name, sort = TRUE) |> 
+  mutate(porc = 100*n/sum(n))
+```
+
+
+## Dependencia entre cualitativas
+
+A continuación, vemos si hay alguna variable que tenga independencia respecto a la variable objetivo con el test de chi-cuadrado.
+
+```{r}
+spotify_fusion <- spotify_fusion |>
+  mutate(across(where(is.character), as_factor))
+
+chisq <-
+  tibble("variable" = spotify_fusion |> select(where(is.factor)) |> names(),
+         "p_value" = spotify_fusion |> select(where(is.factor)) |>
+           map_dbl(.f = function(x) { chisq.test(spotify_fusion$track_popularity, x)$p.value}))
+
+chisq |> arrange(desc(p_value))
+
+chisq |> filter(p_value > 0.05)
+```
+
+Si ponemos un 95% de confianza (p-valor > 0.05) para detectar las variables independientes, obtendremos que hay variables con un p-valor de 1, es decir, totalmente independientes de la variable objetivo y que no nos aportarán nada. Son las siguientes:
+
+- **track_name**, **artist_name** y **album_name**, con sus respectivas variables de ID. Al fin y al cabo cada observación tiene unos nombres y unos números identificativos que no tendrán una relación con la popularidad.
+
+- **track_available_markets** y **artist_genres**. Como ya vimos en sus respectivos estudios, son variables conformadas por listas donde cada pista tiene una lista distinta. Estas variables no nos aportarían información, es por ello por lo que creamos variables binarias a partir de ellas.
+
+- **track_lyrics** ocurre lo mismo que con las variables de nombres, cada pista tiene una letra. Para ello ya tenemos las variables de `lyrics_features` que nos ofrece un análisis numérico respecto a dichas letras.
+
+
+## Variables cuantitativas
+
+- **track_acousticness**
+
+Medida de confianza entre 0 y 1 sobre si la pista es acústica. 1 representa una confianza alta en que la pista es acústica. Podemos representar esta variable con un gráfico de densidad, donde veremos que la mayor parte del conjunto de datos tiene una medida acústica cercana a 0. Al#FF0000edor del 27% de las canciones tienen una puntuación de 0, lo que significa que son completamente no acústicas.
+
+```{r}
+spotify_fusion |> 
+  mutate(track_acousticness = round(track_acousticness, 1)) |>
+  count(track_acousticness, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(track_acousticness)) +
+    geom_density(color = "#17A54A", fill = "#71EB9D") +
+    geom_vline(aes(xintercept = mean(track_acousticness)), 
+               color = '#FF0000', linetype = 'dashed', size = 0.6)
+```
+
+- **track_danceability**
+
+La bailabilidad describe lo adecuada que es una pista para bailar basándose en una combinación de elementos musicales que incluyen el tempo, la estabilidad del ritmo, la fuerza del compás y la regularidad general. Un valor de 0 es el menos bailable y 1 el más bailable.
+
+La mayoría de las pistas tienen una puntuación de bailabilidad de al#FF0000edor 0.5, siendo la puntuación más frecuente 0.7 con un 23%. Podemos decir que en su gran mayoría destaca una bailabilidad relativamente alta.
+
+```{r}
+spotify_fusion |> 
+  mutate(track_danceability = round(track_danceability, 1)) |>
+  count(track_danceability, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(track_danceability)) +
+    geom_density(color = "#17A54A", fill = "#71EB9D") +
+    geom_vline(aes(xintercept = mean(track_danceability)), 
+               color = '#FF0000', linetype = 'dashed', size = 0.6)
+```
+
+- **track_disc_number**
+
+Número de disco en el que se encuentra la canción, en el caso de que el álbum esté compuesto de más de un disco, algo que no suele ser lo habitual.
+
+Los valores que se toman en esta base de datos es de 1 a 81, pero como hemos comentado, el 98% de registros pertenecen a un solo disco. Esta variable podríamos reagruparla en dos categorías que fuese `unique` o `various`.
+
+```{r}
+spotify_fusion |> 
+  count(track_disc_number, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(track_disc_number)) +
+    geom_density(color = "#17A54A", fill = "#71EB9D") +
+    geom_vline(aes(xintercept = mean(track_disc_number)), 
+               color = '#FF0000', linetype = 'dashed', linewidth = 1)
+
+spotify_fusion <- spotify_fusion |> 
+  mutate(track_disc_number = ifelse(track_disc_number == 1, "unique", "various"))
+```
+
+- **track_duration_ms**
+
+Duración de la pista en milisegundos. Para una mejor interpretación, lo pasamos primero a minutos. Una vez hecho, vemos que hay mucha variedad en cuanto a la duración de las pistas, desde 0 hasta 91 minutos, desde pistas que quizás son simples sonidos hasta lo que podrían ser programas de radio o cuentos narrados. La media de duración de una pista es 4.12 minutos.
+
+```{r}
+spotify_fusion$track_duration_min <- spotify_fusion$track_duration_ms / 60000
+spotify_fusion$track_duration_min <- spotify_fusion$track_duration_min |> round(2)
+
+summary(spotify_fusion$track_duration_min)
+
+spotify_fusion |> 
+  mutate(track_duration_min = round(track_duration_min, 1)) |>
+  count(track_duration_min, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(track_duration_min)) +
+    geom_bar(color = "#17A54A", fill = "#71EB9D", bins = 45) +
+    scale_x_continuous(breaks = seq(0, max(spotify_fusion$track_duration_min), 5)) +
+    theme_minimal()
+```
+
+- **track_energy**
+
+La energía es una medida de 0 a 1 y representa una medida perceptual de intensidad y actividad. Normalmente, las pistas energéticas son rápidas, fuertes y ruidosas. Las características perceptivas que contribuyen a este atributo incluyen el rango dinámico, el volumen percibido, el timbre, la velocidad de inicio y la entropía general.
+
+La mayoría de las pistas tienen una energía entre 0.4 y 0.8, siendo la media 0.58.
+
+```{r}
+spotify_fusion |> 
+  mutate(track_energy = round(track_energy, 1)) |>
+  count(track_energy, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(track_energy)) +
+    geom_density(color = "#17A54A", fill = "#71EB9D") +
+    geom_vline(aes(xintercept = mean(track_energy)), 
+               color = '#FF0000', linetype = 'dashed', size = 0.6)
+```
+
+- **track_instrumentalness**
+
+Esta variable p#FF0000ice si una pista no contiene voces de 0 a 1. Cuanto más se acerque el valor a 1, mayor será la probabilidad de que la pista no contenga voces, mientras que un valor cercano a 0 sería una pista "vocal" sin instrumentalidad, como podría ser un podcast.
+
+Casi el 75% de los datos tienen un valor de 0, lo que significa que son canciones vocales, pero también hay un pico de canciones en torno a un 11% con presencia instrumental entre 0.8 y 0.9.
+
+```{r}
+spotify_fusion |> 
+  mutate(track_instrumentalness = round(track_instrumentalness, 1)) |>
+  count(track_instrumentalness, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(track_instrumentalness)) +
+    geom_density(color = "#17A54A", fill = "#71EB9D") +
+    geom_vline(aes(xintercept = mean(track_instrumentalness)), 
+               color = '#FF0000', linetype = 'dashed', size = 0.6)
+```
+
+- **track_key**
+
+Clave general estimada de la pista. Cada número se asigna a una clave utilizando la notación estándar Pitch Class. Por ejemplo, 0 = Do, 1 = Do#/Sib, 2 = Re...
+
+La tonalidad más frecuente es `Do` (key = 0) con un 11.83%, siguiéndole `Sol` (key = 7) con un 11.34% y `Re` (key = 2) con un 10.04%. En general, se puede ver una distribución relativamente uniforme de las tonalidades.
+
+```{r}
+spotify_fusion |> 
+  count(track_key, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(track_key)) +
+  geom_bar(color = "#17A54A", fill = "#71EB9D") +    
+  scale_x_continuous(breaks = seq(0, max(spotify_fusion$track_key), 1)) +
+  theme_minimal()
+```
+
+- **track_liveness**
+
+Liveness detecta la presencia de público en la grabación de 0 a 1. Los valores de liveness más cercanos a 1 representan una mayor probabilidad de que la pista se haya interpretado en directo.
+
+La mayoría de pistas (58.26%) tienen una probabilidad entre 0.1 y 0.2 de haber sido grabadas en vivo, por lo que habrán sido grabadas en estudio.
+
+```{r}
+spotify_fusion |> 
+  mutate(track_liveness = round(track_liveness, 1)) |>
+  count(track_liveness, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(track_liveness)) +
+    geom_density(color = "#17A54A", fill = "#71EB9D") +
+    geom_vline(aes(xintercept = mean(track_liveness)), 
+               color = '#FF0000', linetype = 'dashed', size = 0.6)
+```
+
+- **track_loudness**
+
+La sonoridad muestra el volumen global de una pista en decibelios (dB). Los valores de sonoridad se promedian en toda la pista y son útiles para comparar la sonoridad relativa de las pistas. La sonoridad es la cualidad de un sonido que es el principal correlato psicológico de la fuerza física (amplitud). Los valores suelen oscilar entre -60 y 2.7 db.
+
+El valor medio es de -9.59 dB, lo que indica que la mayoría de las canciones tienen un nivel de sonoridad por debajo de 0 dB, que es el nivel máximo que se puede alcanzar sin distorsión en la mayoría de los dispositivos de reproducción. Además, el valor mediano es de -7.67 dB, lo que sugiere que la mayoría de las canciones tienen un nivel de sonoridad por debajo de este valor.
+
+```{r}
+summary(spotify_fusion$track_loudness)
+
+ggplot(spotify_fusion, aes(track_loudness)) +
+    geom_density(color = "#17A54A", fill = "#71EB9D") +
+    geom_vline(aes(xintercept = mean(track_loudness)), 
+               color = '#FF0000', linetype = 'dashed', size = 0.6)
+```
+
+- **track_mode**
+
+Variable binaria. El modo indica la modalidad (mayor o menor) de una pista, el tipo de escala del que se deriva su contenido melódico. Mayor se representa con 1 y menor con 0.
+
+El 62.2% de los datos tiene una modalidad mayor.
+
+```{r}
+spotify_fusion |> 
+  count(track_mode, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+spotify_fusion <- spotify_fusion |> 
+  mutate(track_mode = ifelse(track_mode == 0, "minor", "mayor"))
+```
+
+- **track_speechiness**
+
+Esta variable estudia la locuacidad de una pista. La locuacidad detecta la presencia de palabras habladas en una pista. Cuanto más hablada sea la grabación (programa de entrevistas, audiolibro, poesía), más se acercará a 1. Los valores entre 0,33 y 0,66 describen pistas que pueden contener tanto música como voz (música rap). Los valores inferiores a 0,33 representan probablemente música y otras pistas no habladas.
+
+Según los gráficos realizados, nos aporta la información de que la mayoría de datos tiene un valor muy cercano a 0, lo que sugiere que no contiene palabras habladas significativas. Esto nos crea cierta confusión ya que la variable estudiada anteriormente, **track_instrumentalness**, que medía si la pista no contiene voces y es instrumental, resulta que nos aportaba totalmente lo contrario, que la mayoría de pistas contenían voces y no eran instrumentales.
+
+```{r}
+summary(spotify_fusion$track_speechiness)
+
+spotify_fusion |> 
+  mutate(track_speechiness = round(track_speechiness, 1)) |>
+  count(track_speechiness, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(track_speechiness)) +
+    geom_density(color = "#17A54A", fill = "#71EB9D") +
+    geom_vline(aes(xintercept = mean(track_speechiness)), 
+               color = '#FF0000', linetype = 'dashed', size = 0.6)
+```
+
+- **track_tempo**
+
+Tempo global estimado de una pista en pulsaciones por minuto (BPM). En terminología musical, el tempo es la velocidad o el ritmo de una pieza determinada y se deriva directamente de la duración media de los tiempos. Presenta valores de 0 a 244 BPM.
+
+La media de BPM es de 118.30 BPM.
+
+```{r}
+summary(spotify_fusion$track_tempo)
+
+spotify_fusion |> 
+  mutate(track_tempo = round(track_tempo, 1)) |>
+  count(track_tempo, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(track_tempo)) +
+    geom_density(color = "#17A54A", fill = "#71EB9D") +
+    geom_vline(aes(xintercept = mean(track_tempo)), 
+               color = '#FF0000', linetype = 'dashed', size = 0.6)
+```
+
+- **track_time_signature**
+
+Esta variable mide el compás musical de la pista, que está compuesto por varias medidas de tiempo. Un valor de 0 significa que el tiempo de la canción no está definido o es desconocido. Un valor de 1 representa un compás de una sola nota, un valor de 2 representa un compás de dos notas... y así hasta 5.
+
+El valor más representado es 4 con un 86.06%, es decir, la mayoría de las pistas tienen un compás de cuatro notas.
+
+```{r}
+summary(spotify_fusion$track_time_signature)
+
+spotify_fusion |> 
+  mutate(track_time_signature = round(track_time_signature, 1)) |>
+  count(track_time_signature, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(track_time_signature)) +
+  geom_bar(color = "#17A54A", fill = "#71EB9D") +    
+  scale_x_continuous(breaks = seq(0, max(spotify_fusion$track_time_signature), 1)) +
+  theme_minimal()
+```
+
+- **track_number**
+
+Número de la pista en su álbum correspondiente. A diferencia de la variable **track_disc_number**, que nos decía el número de disco en el que se encuentra la canción dentro de su álbum, esta variable nos indica el número de la canción dentro del álbum. 
+Esta variable puede aportarnos más información.
+
+El 44% de las pistas se encuentran en la primera posición del álbum. Hay que tener en cuenta el detalle de que no estamos diferenciando entre álbum o single, por lo que en un single es lógico que sea la primera pista y única.
+
+Más información sobre esta variable. Hay una representatividad de al menos un 1% cuando hay hasta 14 pistas en un álbum. A partir de 14, la proporción es casi nula, llegando hasta 655 como máximo.
+
+```{r}
+spotify_fusion |> 
+  mutate(track_number = round(track_number, 1)) |>
+  count(track_number, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+```
+
+- **track_valence**
+
+Medida de 0 a 1 que describe la positividad musical transmitida por una pista. Las pistas con valencia alta suenan más positivas, mientras que las pistas con valencia baja suenan más negativas.
+
+Proporción muy similar a la variable **track_popularity**, tendremos que ver la relación entre ellas.
+
+```{r}
+summary(spotify_fusion$track_valence)
+
+spotify_fusion |> 
+  mutate(track_valence = round(track_valence, 1)) |>
+  count(track_valence, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(track_valence)) +
+    geom_density(color = "#17A54A", fill = "#71EB9D") +
+    geom_vline(aes(xintercept = mean(track_valence)), 
+               color = '#FF0000', linetype = 'dashed', size = 0.6)
+```
+
+- **artist_popularity**
+
+Popularidad del artista, que es calculada a través de la popularidad de sus canciones. Al igual que para las canciones, la popularidad del artista se mide de 0 a 100.
+
+Distribución también muy similar a la variable **track_popularity**, tendremos que ver la relación entre ellas.
+
+```{r}
+summary(spotify_fusion$artist_popularity)
+
+spotify_fusion |> 
+  mutate(artist_popularity = round(artist_popularity, 1)) |>
+  count(artist_popularity, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(artist_popularity)) +
+    geom_density(color = "#17A54A", fill = "#71EB9D") +
+    geom_vline(aes(xintercept = mean(artist_popularity)), 
+               color = '#FF0000', linetype = 'dashed', size = 0.6)
+```
+
+- **artist_followers**
+
+Número de seguidores del artista. Presenta una distribución muy amplia desde 0 hasta 41 millones, lo mejor será crear una nueva columna donde reagrupemos los valores para poder estudiarla. Pero antes de eso, debemos tener en cuenta que su mediana es 24.034 seguidores, por lo que probablemente la mayoría de artistas de nuestra base de datos contaran con menos de 500.000 seguidores.
+
+Observamos que casi el 90% de los artistas tienen menos de un millón de seguidores y que apenas un 3% superan los 5 millones.
+
+```{r}
+summary(spotify_fusion$artist_followers)
+
+spotify_fusion$artist_followers_categories <- cut(spotify_fusion$artist_followers, 
+                                       breaks = c(-1, 10e4, 50e4, 1e6, 5e6, 50e6), 
+                                       labels = c("0_100K", "100K_500K", 
+                                                  "500K_1M", "1M_5M", ">5M"))
+
+spotify_fusion |> 
+  count(artist_followers_categories, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(artist_followers_categories)) +
+    geom_bar(color = "#17A54A", fill = "#71EB9D") +
+    theme_minimal()
+```
+
+- **album_tracks**
+
+Número de pistas del álbum al que pertenece la pista. Como hay una gran parte de las observaciones que son single, en esta variable aparece como 1. Es por ello por lo que representa casi el 30% esta categoría. No obstante, la media de pistas por álbum suele ser de 11 y también contamos con casos anómalos como un álbum con 977 pistas. 
+
+```{r}
+summary(spotify_fusion$album_tracks)
+
+spotify_fusion |> 
+  mutate(album_tracks = round(album_tracks, 1)) |>
+  count(album_tracks, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(album_tracks)) +
+    geom_density(color = "#17A54A", fill = "#71EB9D") +
+    geom_vline(aes(xintercept = mean(album_tracks)), 
+               color = '#FF0000', linetype = 'dashed', size = 0.6)
+```
+
+- **lyric_mean_syllables_word**
+
+Esta variable extrae de la variable **track_lyrics** la media de sílabas por palabra en la letra de la pista. 
+
+La media de sílabas por palabra es de 1.05 y el máximo de 4. 
+
+Destacar que hay 15.387 pistas, el 16% del total, que tienen un valor de -1. Estas pistas son las que no tienen letra de la canción ya sea porque son pistas totalmente acústicas o porque no están registradas en la plataforma Genius.
+
+```{r}
+summary(spotify_fusion$lyric_mean_syllables_word)
+
+spotify_fusion |> 
+  mutate(lyric_mean_syllables_word = round(lyric_mean_syllables_word, 1)) |>
+  count(lyric_mean_syllables_word, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(lyric_mean_syllables_word)) +
+    geom_density(color = "#17A54A", fill = "#71EB9D") +
+    geom_vline(aes(xintercept = mean(lyric_mean_syllables_word)), 
+               color = '#FF0000', linetype = 'dashed', size = 0.6)
+```
+
+- **lyric_mean_words_sentence**
+
+Media de palabras por frase en la pista. La media de palabras por frase es de 3.44 y puede comprender en una frase desde 0 palabras hasta 252.
+
+```{r}
+summary(spotify_fusion$lyric_mean_words_sentence)
+
+spotify_fusion |> 
+  mutate(lyric_mean_words_sentence = round(lyric_mean_words_sentence, 1)) |>
+  count(lyric_mean_words_sentence, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(lyric_mean_words_sentence)) +
+    geom_density(color = "#17A54A", fill = "#71EB9D") +
+    geom_vline(aes(xintercept = mean(lyric_mean_words_sentence)), 
+               color = '#FF0000', linetype = 'dashed', size = 0.6)
+```
+
+- **lyric_n_sentences**
+
+Número de frases en la pista. La media de frases por pista es de 43.57 y puede comprender desde 2 frases hasta 2.519.
+
+```{r}
+summary(spotify_fusion$lyric_n_sentences)
+
+spotify_fusion |> 
+  mutate(lyric_n_sentences = round(lyric_n_sentences, 1)) |>
+  count(lyric_n_sentences, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(lyric_n_sentences)) +
+    geom_density(color = "#17A54A", fill = "#71EB9D") +
+    geom_vline(aes(xintercept = mean(lyric_n_sentences)), 
+               color = '#FF0000', linetype = 'dashed', size = 0.6)
+```
+
+- **lyric_n_words**
+
+Número de palabras en la pista. La media de palabras por pista es de 313.8 y puede comprender desde 1 palabra hasta 39.111.
+
+```{r}
+summary(spotify_fusion$lyric_n_words)
+
+spotify_fusion |> 
+  mutate(lyric_n_words = round(lyric_n_words, 1)) |>
+  count(lyric_n_words, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(lyric_n_words)) +
+    geom_density(color = "#17A54A", fill = "#71EB9D") +
+    geom_vline(aes(xintercept = mean(lyric_n_words)), 
+               color = '#FF0000', linetype = 'dashed', size = 0.6)
+```
+
+- **lyric_sentence_similarity**
+
+Esta variable mide la similitud entre frases de la pista. Un valor cercano a 0 nos diría que no hay apenas relación entre frases, como puede ser una historia o un podcast, donde usualmente no se repiten frases, mientras que un valor cercano a 1 supondría una fuerte relación entre frases, como puede ser una canción de reggaeton, donde se suelen repetir muchas veces la misma frase.
+
+La media de esta variable se encuentra en -0.11, ya que los 15.000 registros que no cuentan con letra tienen una fuerte importancia. No obstante, el valor más repetido es el 0 con un 46% de representatividad, por lo que no hay pistas con una gran similitud.
+
+```{r}
+summary(spotify_fusion$lyric_sentence_similarity)
+
+spotify_fusion |> 
+  mutate(lyric_sentence_similarity = round(lyric_sentence_similarity, 1)) |>
+  count(lyric_sentence_similarity, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(lyric_sentence_similarity)) +
+    geom_density(color = "#17A54A", fill = "#71EB9D") +
+    geom_vline(aes(xintercept = mean(lyric_sentence_similarity)), 
+               color = '#FF0000', linetype = 'dashed', size = 0.6)
+```
+
+- **lyric_vocabulary_wealth**
+
+Nivel de riqueza del vocabulario. Un valor cercano a 0 se cataloga como una canción con pobre vocabulario y un valor cercano a 1 se cataloga como una canción rica en vocabulario. La media es de 0.30 (teniendo en cuenta las canciones sin letra) y el valor más repetido es 0.6, por lo que se puede considerar que la gran parte de las pistas cuentan con un vocabulario rico.
+
+```{r}
+summary(spotify_fusion$lyric_vocabulary_wealth)
+
+spotify_fusion |> 
+  mutate(lyric_vocabulary_wealth = round(lyric_vocabulary_wealth, 1)) |>
+  count(lyric_vocabulary_wealth, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(lyric_vocabulary_wealth)) +
+    geom_density(color = "#17A54A", fill = "#71EB9D") +
+    geom_vline(aes(xintercept = mean(lyric_vocabulary_wealth)), 
+               color = '#FF0000', linetype = 'dashed', size = 0.6)
+```
+
+
+## Colinealidad
+
+Para las variables numéricas, calculamos la colinealidad entre ellas. Como son 43 variables numéricas, la matriz de correlación puede verse un poco difusa. Filtraremos las variables que tengan una correlación mayor a 0.8 y valoraremos si descartarlas para nuestro estudio.
+
+```{r}
+cor_matrix <- spotify_fusion |> select(where(is.numeric)) |> na.omit() |> cor() |> round(2)
+
+cor_matrix |>
+  corrplot(method = "square", tl.cex = 0.65, number.cex = 0.7, type = "lower")
+
+# Encontrar las variables con una correlación mayor a 0.7
+corr_vars <- findCorrelation(cor_matrix, cutoff = 0.8)
+
+# Obtener los nombres de las variables más correlacionadas
+corr_var_names <- colnames(cor_matrix)[corr_vars] |> print()
+```
+
+Las variables que decidimos descartar porque tienen una correlación mayor de 0.8 son las siguientes:
+
+- **track_instrumentalness**, contraria a todas las variables de lyrics_features. Si hay instrumentalidad (sin voces), no habrá lyrics.
+
+- **artist_popularity**, calculada a partir de track_popularity.
+
+- **lyric_sentence_similarity** y **lyric_vocabulary_wealth**, muy relacionadas entre ellas y entre lyric_mean_words_sentence, intuimos que son sacadas a partir de esta.
+
+- **track_num_countries**, muy correlacionada con las variables binarias de continentes.
+
+Las variables relacionadas con los continentes donde se escuchan las pistas tienen una fuerte correlación entre ellas pero las dejaremos porque hay algunos continentes menos correlacionados que otros.
+
+
+## Variables fecha
+
+- **album_release_date**
+
+Fecha de lanzamiento de la pista, ya sea como álbum o como single. Comprende fechas desde 1926 hasta 2019, pero si es verdad que pistas del siglo XX solo hay un 6.33%. El año con más pistas registradas es 2018 con casi 25.000 pistas (28.7%), seguidos de 2017 y 2019, con un 13% aproximadamente cada uno.
+
+```{r}
+library(lubridate)
+
+spotify_fusion |> 
+  count(album_release_date, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+summary(spotify_fusion$album_release_date)
+
+ggplot(spotify_fusion, aes(album_release_date)) +
+    geom_density(color = "#17A54A", fill = "#71EB9D") +
+    geom_vline(aes(xintercept = mean(album_release_date)), 
+               color = '#FF0000', linetype = 'dashed', size = 0.6)
+
+limites_años <- as.Date(c("1926-01-01", "2000-01-01", "2022-01-01"))
+spotify_fusion$album_release_centurie <- cut(spotify_fusion$album_release_date, 
+                                                    breaks = limites_años, 
+                                                    labels = c("S_XX", "S_XXI"))
+
+spotify_fusion |> 
+  count(album_release_centurie, sort = FALSE) |> 
+  mutate(porc = 100*n/sum(n))
+
+spotify_fusion <- spotify_fusion |> 
+  mutate(album_release_year = year(album_release_date))
+
+spotify_fusion |> 
+  count(album_release_year, sort = TRUE) |> 
+  mutate(porc = 100*n/sum(n))
+
+ggplot(spotify_fusion, aes(album_release_year)) +
+    geom_bar(color = "#17A54A", fill = "#71EB9D") +
+    theme_minimal()
+```
+
+ 
+# Modificación estructural
+
+```{r}
+spotify_final1 <- 
+  spotify_fusion |> 
+# Eliminamos variables
+  dplyr::select(-c(track_name, album_name, artist_name, track_id, 
+            album_id, artist_id, track_available_markets, 
+            artist_genres, track_lyrics, 
+            track_duration_ms, track_playlist,
+            album_release_date))
+
+
+spotify_final1$track_country<-factor(spotify_final1$track_country)
+spotify_final1$album_type<-factor(spotify_final1$album_type)
+spotify_final1$playlist_mean<-factor(spotify_final1$playlist_mean)
+spotify_final1$artist_followers_categories<-factor(spotify_final1$artist_followers_categories)
+spotify_final1$album_release_centurie<-factor(spotify_final1$album_release_centurie)
+spotify_final1$market_Africa<-factor(spotify_final1$market_Africa)
+spotify_final1$market_America<-factor(spotify_final1$market_America)
+spotify_final1$market_Asia<-factor(spotify_final1$market_Asia)
+spotify_final1$market_Europa<-factor(spotify_final1$market_Europa)
+spotify_final1$market_Oceania<-factor(spotify_final1$market_Oceania)
+spotify_final1$genre_rap<-factor(spotify_final1$genre_rap)
+spotify_final1$genre_pop<-factor(spotify_final1$genre_pop)
+spotify_final1$genre_rock<-factor(spotify_final1$genre_rock)
+spotify_final1$genre_house<-factor(spotify_final1$genre_house)
+spotify_final1$genre_indie<-factor(spotify_final1$genre_indie)
+spotify_final1$genre_dance<-factor(spotify_final1$genre_dance)
+spotify_final1$genre_folk<-factor(spotify_final1$genre_folk)
+spotify_final1$genre_classical<-factor(spotify_final1$genre_classical)
+spotify_final1$genre_hiphop<-factor(spotify_final1$genre_hiphop)
+spotify_final1$genre_electro<-factor(spotify_final1$genre_electro)
+spotify_final1$track_disc_number<-factor(spotify_final1$track_disc_number)
+spotify_final1$track_mode<-factor(spotify_final1$track_mode)
+
+skim(spotify_final1)
+```
+
+
+# Exportación de ficheros
+
+```{r}
+write.csv(spotify_final, "spotify_final.csv")
+write.csv(spotify_fusion, "spotify_fusion.csv")
+write.csv(spotify_final1, "spotify_final1.csv")
+```
+
+
+# Muestreo
+
+Hacemos un muestreo del 10% de los datos, que utilizaremos para entrenar nuestro modelo de una manera más cómoda.
+
+```{r}
+set.seed(150)
+
+spotify_sample <-
+  spotify_final |> 
+  group_by(track_popularity) |> 
+  slice_sample(prop = 0.2) |> 
+  ungroup()
+
+spotify_sample |>  
+  count(track_popularity) |> 
+  mutate(porc = 100*n/sum(n))
+```
+
+
+# Particiones
+
+A continuación, antes de pasar a la receta, hacemos las particiones donde incluiremos un conjunto de validación al tener datos suficientes. También aplicaremos la validación cruzada.
+
+```{r}
+# 10% test y 90% el resto
+spotify_split <- initial_split(spotify_sample, prop = 0.9, strata = track_popularity)
+spotify_train <- training(spotify_split)
+spotify_test <- testing(spotify_split)
+
+# Validación aleatoria simple: 10% test, 30% validación y 60% train
+spotify_val <- validation_split(spotify_train, prop = 0.6666667, strata = track_popularity)
+
+
+# Conjunto de validación cruzada (v-folds) para la paralelización
+spotify_cv_folds <- vfold_cv(data = spotify_train, v = 4, repeats = 8, strata = track_popularity)
+```

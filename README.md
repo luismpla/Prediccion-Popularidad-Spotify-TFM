@@ -1,6 +1,6 @@
 # Análisis predictivo de la popularidad de una canción en Spotify
 
-Este repositorio contiene el código en R utilizado para modelar y predecir la popularidad de una canción en Spotify. Estos archivos de código pertenecen al TFM del Master en Minería de Datos e Inteligencia de Negocio de la Universidad Complutense de Madrid.
+Este repositorio contiene el código en R utilizado para modelar y predecir la popularidad de una canción en Spotify. Estos archivos de código pertenecen al TFM del Máster en Minería de Datos e Inteligencia de Negocios de la Universidad Complutense de Madrid.
 
 Detalle de cada uno de los archivos:
 - **DATOS.zip**: incluye los datos utilizados para el desarrollo de la investigación, incluye el corpus de noticias falsas, stopwords, y CORPES de la RAE.
